@@ -1,22 +1,6 @@
-// pinout https://blog.protoneer.co.nz/arduino-cnc-shield/
-// current control http://www.360doc.com/content/20/0805/03/12109864_928572399.shtml
-// float to hex https://gregstoll.com/~gregstoll/floattohex/
-
 #include "main.h"
-#include "kinematics.cpp"
 
-// BasicStepperDriver(short steps, short dir_pin, short step_pin);
-BasicStepperDriver Joint0(200*27, 5, 2);
-BasicStepperDriver Joint1(200*51, 6, 3);
-BasicStepperDriver Joint2(200*27, 7, 4);
-BasicStepperDriver Joint3(200, 12, 13);
-SyncDriver controller(Joint0, Joint1, Joint2);
 
-position Position;
-position Target;
-position Difference;
-
-kinematics Kinematics(274,130);
 
 ISR(TIMER1_COMPA_vect){
   // get Instruction from the serial port
@@ -50,7 +34,7 @@ ISR(TIMER1_COMPA_vect){
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTimeout(90); // todo: check
+  //Serial.setTimeout(90);
   Serial.println("Type 0x05 for help.");
 
   // void BasicStepperDriver::begin(float rpm = (60.0F), short microsteps = (short)1)
@@ -88,9 +72,10 @@ void setup() {
   Position.joint3 = -999;
 
   // set Status to Init
-  INSTRUCTION_BUFFER[0] = 0x00;
   #ifdef debug
     INSTRUCTION_BUFFER[0] = 0x01;
+  #else
+    INSTRUCTION_BUFFER[0] = 0x00;
   #endif
 }
 
@@ -99,7 +84,7 @@ void loop(){
   case 0x00: // Init
     if (!digitalRead(9)) {Position.joint0 = 180;}
     if (!digitalRead(10)) {Position.joint1 = 0;}
-    if (!digitalRead(11)) {Position.joint2 = 0;}
+    if (!digitalRead(11)) {Position.joint2 = 180;}
     //if (!digitalRead(A1)){Position.joint3 = 0;} todo!!
     Position.joint3 = 0;
 
@@ -110,7 +95,7 @@ void loop(){
       (Position.joint2 == 0) ? 0 : DirJoint2 * -1
     );
 
-    if (Position.joint0 == 180 && Position.joint1 == 0 && Position.joint2 == 0 && Position.joint3 == 0){
+    if (Position.joint0 == 180 && Position.joint1 == 0 && Position.joint2 == 180 && Position.joint3 == 0){
       Serial.println("Ready. 0x05 for help.");
       Difference.joint0 = -180;
       Difference.joint1 = Difference.joint2 = Difference.joint3 = 0;
@@ -356,8 +341,53 @@ void loop(){
     Difference.joint3 = Target.joint3 - Position.joint3;
 
     INSTRUCTION_BUFFER[0] = 0x03;
-
     break;
+
+  case 0x11: // Inverse kinematics Rightly
+    if (Serial.available() < 12) { // 1-4: X, 5-8: Y, 9-12: Z, 13-16: DirectionX, 17-20: DirectionY, 21-24: DirectionZ
+      delay(100); // wait
+      Serial.println("A float contains 4 bytes * 3 Axis!");
+      break;
+    }
+
+    // X
+    Serial.readBytes(FLOAT_BUFFER, FLOAT_SIZE);
+    memcpy (&Target.X, FLOAT_BUFFER, 4);
+
+    // Y
+    Serial.readBytes(FLOAT_BUFFER, FLOAT_SIZE);
+    memcpy (&Target.Y, FLOAT_BUFFER, 4);
+
+    // Z
+    Serial.readBytes(FLOAT_BUFFER, FLOAT_SIZE);
+    memcpy (&Target.Z, FLOAT_BUFFER, 4);
+
+    // calculate
+    Kinematics.InverseKinematics(Target.X, Target.Y, Target.Z);
+
+    if (Kinematics.Position_.Rightly) {
+      Target.joint0 = Kinematics.Position_.RightlyJoint0;
+      Target.joint1 = Kinematics.Position_.RightlyJoint1;
+      Target.joint2 = Kinematics.Position_.RightlyJoint2;
+      Target.joint3 = Kinematics.Position_.RightlyJoint3;
+    } else if (Kinematics.Position_.Lefty) {
+      Target.joint0 = Kinematics.Position_.LeftyJoint0;
+      Target.joint1 = Kinematics.Position_.LeftyJoint1;
+      Target.joint2 = Kinematics.Position_.LeftyJoint2;
+      Target.joint3 = Kinematics.Position_.LeftyJoint3;
+    } else {
+      Serial.println("Unreachable");
+      INSTRUCTION_BUFFER[0] = 0x01;
+      break;
+    }
+
+    Difference.joint0 = Target.joint0 - Position.joint0;
+    Difference.joint1 = Target.joint1 - Position.joint1;
+    Difference.joint2 = Target.joint2 - Position.joint2;
+    Difference.joint3 = Target.joint3 - Position.joint3;
+
+    INSTRUCTION_BUFFER[0] = 0x03;
+  break;
 
     case 0xFE:
       Serial.println("Estop.");
